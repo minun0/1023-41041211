@@ -90,18 +90,27 @@
                 <option value="night">夜空</option>
                 <option value="forest">森林</option>
             </select>
-            <label for="timerToggle">啟用計時器：</label>
-            <select id="timerToggle">
-                <option value="on">開啟</option>
-                <option value="off">關閉</option>
-            </select>
+            <form>
+                <p>選擇遊戲模式:</p>
+                <label>
+                    <input type="checkbox" name="modes" value="timer">
+                    計時器
+                </label><br>
+            </form>
 
             <button id="restartButton">重新開始</button>
             <p id="scoreDisplay">分數: 0</p>
             <p id="livesDisplay">生命: 3</p>
             <p id="timerDisplay">時間: 60</p> <!-- 倒數計時器 -->
             <p id="powerUpInfo">道具說明：黃色方塊擴大擋板，藍色方塊加速球。</p>
+            <p id="giveReward">每增加10分，可能獲得時間增+10秒或生命+1</p>
         </div>
+
+        <div id="messageBox"
+            style="display: none; position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background-color: rgba(0, 0, 0, 0.7); color: white; padding: 10px; border-radius: 5px; z-index: 10;">
+            獎勵信息
+        </div>
+
         <p id="instruction">按下滑鼠右鍵開始遊戲</p>
     </div>
 
@@ -151,8 +160,19 @@
         let paddleEnlarged = false;
         let speedBoosted = false;
 
-        let timer = 60; // 計時器初始值
-        let timerInterval; // 計時器ID
+        // 新增一個變數來跟蹤計時器模式狀態
+        let timerEnabled = false;
+        let timer = 60; // 在全局定義計時器變數
+        let timerInterval; // 定義計時器的間隔變數
+
+        let explosionParticles = []; // 儲存爆炸粒子
+
+        let comboCount = 0; // 連擊次數
+        let comboScore = 0; // 連擊加分
+        const comboThreshold = 3; // 連擊獲得額外加分的門檻
+        let lastHitTime = 0; // 儲存上次擊中的時間
+        const comboTimeout = 3000; // 1 秒的連擊時間限制
+
 
         // 事件監聽器
         document.addEventListener("keydown", keyDownHandler, false);
@@ -162,16 +182,21 @@
         difficultySelector.addEventListener("change", setDifficulty);
         backgroundSelector.addEventListener("change", changeBackground);
 
-        // 修改右鍵點擊事件監聽器
+        // 在右鍵點擊事件監聽器中更新計時器模式狀態
         document.addEventListener("contextmenu", function (e) {
             e.preventDefault(); // 阻止右鍵選單
             if (!gameStarted) {
+                // 檢查計時器模式是否被選擇
+                const timerCheckbox = document.querySelector('input[name="modes"][value="timer"]');
+                timerEnabled = timerCheckbox.checked; // 更新計時器模式狀態
+
                 gameStarted = true;
                 instruction.style.display = "none"; // 隱藏指示文字
                 resetBall(); // 初始化球的位置
                 backgroundMusic.play(); // 播放背景音樂
 
-                if (timerToggle.value === "on") {
+                // 僅在球發射後才開始計時
+                if (timerEnabled) {
                     startTimer(); // 開始計時
                 }
 
@@ -269,6 +294,44 @@
             ctx.closePath();
         }
 
+        //爆炸特效
+        function drawExplosion(x, y) {
+            for (let i = 0; i < 10; i++) {
+                explosionParticles.push({
+                    x: x,
+                    y: y,
+                    radius: Math.random() * 5 + 2,
+                    color: "#ffcc00",
+                    life: Math.random() * 30 + 10,
+                    vx: (Math.random() - 0.5) * 4,
+                    vy: (Math.random() - 0.5) * 4,
+                });
+            }
+        }
+
+        function updateExplosions() {
+            for (let i = explosionParticles.length - 1; i >= 0; i--) {
+                let particle = explosionParticles[i];
+                particle.x += particle.vx;
+                particle.y += particle.vy;
+                particle.life--;
+
+                if (particle.life <= 0) {
+                    explosionParticles.splice(i, 1); // 移除粒子
+                }
+            }
+        }
+
+        function drawParticles() {
+            for (let particle of explosionParticles) {
+                ctx.beginPath();
+                ctx.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2);
+                ctx.fillStyle = particle.color;
+                ctx.fill();
+                ctx.closePath();
+            }
+        }
+
         function drawBricks() {
             for (let c = 0; c < brickColumnCount; c++) {
                 for (let r = 0; r < brickRowCount; r++) {
@@ -302,28 +365,53 @@
         }
 
         function collisionDetection() {
+            const currentTime = Date.now(); // 取得當前時間
             for (let c = 0; c < brickColumnCount; c++) {
                 for (let r = 0; r < brickRowCount; r++) {
                     const b = bricks[c][r];
                     if (b.status > 0) {
                         if (x > b.x && x < b.x + brickWidth && y > b.y && y < b.y + brickHeight) {
-                            dy = -dy; // 改變球的方向
+                            dy = -dy;
                             b.status--; // 減少擊打次數
-                            hitSound.currentTime = 0; // 重新播放音效
-                            hitSound.play(); // 播放擊打音效
-                            score++;
-                            scoreDisplay.textContent = `分數: ${score}`;
+                            if (b.status === 0) {
+                                score++;
+                                const timeSinceLastHit = currentTime - lastHitTime; // 計算距離上次擊中的時間
 
-                            // 隨機掉落道具
-                            if (Math.random() < 0.2) { // 20% 機率掉落道具
-                                const powerUpType = Math.random() < 0.5 ? "enlarge" : "speedUp";
-                                powerUps.push({ x: b.x + brickWidth / 2 - powerUpWidth / 2, y: b.y, type: powerUpType });
+                                if (timeSinceLastHit <= comboTimeout) {
+                                    comboCount++; // 增加連擊數
+                                } else {
+                                    comboCount = 1; // 如果超過 1 秒，重置連擊數
+                                }
+
+                                lastHitTime = currentTime; // 更新上次擊中的時間
+                                comboScore = 0; // 重置連擊加分
+                                scoreDisplay.textContent = `分數: ${score}`;
+                                drawExplosion(b.x + brickWidth / 2, b.y + brickHeight / 2); // 呼叫爆炸動畫
+
+                                // 機率生成道具（例如 30% 的機率掉落）
+                                if (Math.random() < 0.3) {
+                                    generatePowerUp(b.x, b.y);
+                                }
+
+                                // 獎勵：增加生命或延長時間
+                                if (score % 10 === 0) { // 每達到 10 分獎勵一次
+                                    giveReward();
+                                }
+
+                                // 增加連擊獎勵
+                                if (comboCount >= comboThreshold) {
+                                    comboScore = 5; // 設定額外加分
+                                    score += comboScore; // 添加額外得分
+                                    scoreDisplay.textContent = `分數: ${score} (連擊加分!)`;
+                                    showMessage(`連擊獎勵！額外得分 ${comboScore}！`); // 顯示消息
+                                }
                             }
+                            hitSound.play();
 
-                            if (score === brickRowCount * brickColumnCount) {
-                                clearInterval(timerInterval); // 停止計時
-                                alert("恭喜！你贏了！按確定以重新開始");
-                                restartGame();
+                            // 檢查是否所有磚塊都已被消除
+                            if (bricks.every(column => column.every(brick => brick.status === 0))) {
+                                alert("恭喜！你贏了！");
+                                restartGame(); // 重新開始遊戲
                             }
                         }
                     }
@@ -345,6 +433,40 @@
                     i--; // 調整索引
                 }
             }
+        }
+
+
+        function giveReward() {
+            const rewardType = Math.random() < 0.5 ? 'time' : 'life'; // 50% 機率選擇獎勵類型
+            let message = '';
+            if (rewardType === 'time') {
+                const extraTime = 10; // 延長的時間（例如 10 秒）
+                timer += extraTime;
+                message = `獲得獎勵！時間延長 ${extraTime} 秒！`;
+            } else {
+                lives++;
+                livesDisplay.textContent = `生命: ${lives}`;
+                message = `獲得獎勵！增加了1條生命！`;
+            }
+            showMessage(message); // 顯示消息
+        }
+
+        function showMessage(message) {
+            const messageBox = document.getElementById("messageBox");
+            messageBox.textContent = message; // 更新消息內容
+            messageBox.style.display = "block"; // 顯示消息框
+
+            // 2 秒後隱藏消息框
+            setTimeout(() => {
+                messageBox.style.display = "none";
+            }, 2000);
+        }
+
+
+
+        function generatePowerUp(x, y) {
+            const type = Math.random() < 0.5 ? "enlarge" : "speedUp"; // 隨機選擇道具類型
+            powerUps.push({ x: x + brickWidth / 2 - powerUpWidth / 2, y: y, type: type }); // 在磚塊位置生成道具
         }
 
         function enlargePaddle() {
@@ -376,41 +498,44 @@
             drawBricks();
             drawBall();
             drawPaddle();
-            drawPowerUps(); // 繪製道具
+            drawPowerUps();
+            drawParticles();
             collisionDetection();
+            updateExplosions();
 
             if (x + dx > canvas.width - ballRadius || x + dx < ballRadius) {
-                dx = -dx; // 改變球的方向
+                dx = -dx;
             }
             if (y + dy < ballRadius) {
-                dy = -dy; // 改變球的方向
+                dy = -dy;
             } else if (y + dy > canvas.height - ballRadius) {
                 if (x > paddleX && x < paddleX + paddleWidth) {
-                    dy = -dy; // 改變球的方向
+                    dy = -dy;
                 } else {
                     lives--;
                     livesDisplay.textContent = `生命: ${lives}`;
                     if (!lives) {
-                        clearInterval(timerInterval); // 停止計時
+                        clearInterval(timerInterval);
                         alert("遊戲結束，按確定以重新開始");
                         restartGame();
                     } else {
-                        resetBall(); // 當掉落時重置球的位置
+                        resetBall();
+                        comboCount = 0; // Reset combo count on ball drop
                     }
                 }
             }
 
             if (rightPressed && paddleX < canvas.width - paddleWidth) {
-                paddleX += 7; // 向右移動擋板
+                paddleX += 7;
             } else if (leftPressed && paddleX > 0) {
-                paddleX -= 7; // 向左移動擋板
+                paddleX -= 7;
             }
 
-            x += dx; // 更新球的X座標
-            y += dy; // 更新球的Y座標
+            x += dx;
+            y += dy;
 
             if (gameStarted) {
-                requestAnimationFrame(draw); // 繼續繪製
+                requestAnimationFrame(draw);
             }
         }
 
@@ -422,21 +547,28 @@
         }
 
         function resetBricks() {
+            // 磚塊陣列初始化
             bricks = [];
             for (let c = 0; c < brickColumnCount; c++) {
                 bricks[c] = [];
                 for (let r = 0; r < brickRowCount; r++) {
+                    // 設定不同難度下磚塊的擊打次數
+                    let status;
                     if (difficultySelector.value === "easy") {
-                        bricks[c][r] = { x: 0, y: 0, status: 1 }; // 簡單模式只有普通磚塊
+                        status = 1; // 簡單模式的磚塊只有一擊
                     } else if (difficultySelector.value === "medium") {
-                        bricks[c][r] = { x: 0, y: 0, status: Math.random() < 0.5 ? 1 : 2 }; // 中等模式有普通和特殊磚塊
+                        status = Math.random() < 0.5 ? 1 : 2; // 中等模式中隨機分配 1 或 2
                     } else if (difficultySelector.value === "hard") {
-                        bricks[c][r] = { x: 0, y: 0, status: Math.floor(Math.random() * 3) + 1 }; // 困難模式有普通和最多三次擊打的磚塊
+                        status = Math.floor(Math.random() * 3) + 1; // 困難模式中隨機分配 1 到 3
                     }
-                    bricks[c][r].x = c * (brickWidth + brickPadding);
-                    bricks[c][r].y = r * (brickHeight + brickPadding);
+                    // 初始化磚塊的坐標及狀態
+                    bricks[c][r] = { x: c * (brickWidth + brickPadding), y: r * (brickHeight + brickPadding), status: status };
                 }
             }
+            // 更新畫布尺寸以匹配磚塊數量
+            canvas.width = brickColumnCount * (brickWidth + brickPadding);
+            canvas.height = brickRowCount * (brickHeight + brickPadding) + 200;
+            scoreDisplay.textContent = `分數: ${score}`;
         }
 
         function restartGame() {
@@ -446,25 +578,29 @@
             scoreDisplay.textContent = `分數: ${score}`;
             livesDisplay.textContent = `生命: ${lives}`;
             timerDisplay.textContent = `時間: ${timer}`;
-            gameStarted = false;
-            backgroundMusic.pause();
-            backgroundMusic.currentTime = 0;
+
+            // 重新檢查計時器模式
+            const timerCheckbox = document.querySelector('input[name="modes"][value="timer"]');
+            timerEnabled = timerCheckbox.checked; // 更新計時器模式狀態
+
             setDifficulty();
-            resetBall();
             resetBricks();
+            resetBall();
             powerUps = [];
-            instruction.style.display = "block";
-            paddleWidth = 75;
             paddleEnlarged = false;
             speedBoosted = false;
-            clearInterval(timerInterval); // 停止計時
+            clearInterval(timerInterval);
+            instruction.style.display = "block";
+            backgroundMusic.pause();
+            backgroundMusic.currentTime = 0;
+            gameStarted = false;
 
-            // 根據選擇重設計時器
-            if (timerToggle.value === "on") {
-                timerDisplay.textContent = `時間: ${timer}`;
-                timerInterval = setInterval(updateTimer, 1000);
+            // 如果計時器模式被啟用，重新開始計時
+            if (timerEnabled) {
+                startTimer();
             }
         }
+
 
         function updateTimer() {
             timer--;
